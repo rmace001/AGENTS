@@ -1,4 +1,23 @@
-# AGENTS.md 
+# AGENTS.md
+
+## User Actions
+
+Whenever you identify actions the user must take or information the user must provide:
+
+- Add a `## Your actions` section.
+- Use imperative checklist items.
+- Start each item with a specific verb.
+- Order items by time or priority.
+- Group items by day or stage only when useful.
+- Include only actions the user must perform.
+- Omit background, rationale, progress updates, and agent-owned work.
+- Omit the section when the user has no action to take.
+
+For one-off requests, use this shorter prompt:
+
+> List only my next actions. Use imperative checkboxes, order them by time or priority, and omit explanations.
+
+----
 
 ## Asking the User
 

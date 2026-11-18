@@ -1,0 +1,4 @@
+ # Auto-attach to tmux 'main' session if not already inside tmux
+ if [ -z "$TMUX" ] && [[ $- == *i* ]]; then
+   tmux new-session -A -s main
+ fi

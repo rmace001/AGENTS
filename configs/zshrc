@@ -1,4 +1,254 @@
- # Auto-attach to tmux 'main' session if not already inside tmux
- if [ -z "$TMUX" ] && [[ $- == *i* ]]; then
-   tmux new-session -A -s main
- fi
+# ~/.zshrc — fast, oh-my-zsh-free config for personal machines (no employer-specific settings).
+# Measure startup:   for i in {1..5}; do /usr/bin/time -p zsh -il -c exit 2>&1 | grep real; done
+# Profile startup:   zsh -il -c 'zmodload zsh/zprof; source ~/.zshrc; zprof' | head -30
+# Force completion rebuild (e.g. after installing a tool with new completions):
+#                    rm -f ~/.cache/zsh/zcompdump-*; exec zsh
+
+typeset -U path fpath   # keep PATH/FPATH entries unique
+_zcache=${XDG_CACHE_HOME:-$HOME/.cache}/zsh
+[[ -d $_zcache ]] || mkdir -p $_zcache
+
+# Homebrew prefix: from `brew shellenv` in ~/.zprofile, else the first standard location found.
+_brew=$HOMEBREW_PREFIX
+if [[ -z $_brew ]]; then
+  for _p in /opt/homebrew /usr/local /home/linuxbrew/.linuxbrew; do
+    [[ -x $_p/bin/brew ]] && { _brew=$_p; break }
+  done
+  unset _p
+fi
+
+# ─── secrets ────────────────────────────────────────────────────────────────
+# Tokens/passwords live only in an optional chmod-600 file, never in this one.
+[[ -r ~/.zsh_secrets ]] && source ~/.zsh_secrets
+
+# ─── environment ────────────────────────────────────────────────────────────
+export LSCOLORS=Gxfxcxdxbxegedabagacad
+export PAGER=${PAGER:-less} LESS=${LESS:--R}
+
+# ─── node: lazy nvm ─────────────────────────────────────────────────────────
+# nvm.sh costs ~1.4s, so node is put on PATH here and nvm itself loads on the
+# first `nvm …` command (or `nvm <Tab>`). Picks the same version nvm.sh would:
+#   1. node inherited from a parent shell (e.g. after `nvm use 18`) is kept;
+#   2. otherwise the `default` alias (~/.nvm/alias/default, written by
+#      `nvm alias default X`), following alias chains like lts/* -> lts/<name> -> vX.
+export NVM_DIR=$HOME/.nvm
+() {
+  local v=default p i
+  local -a d
+  for p in $path; do                                           # 1. current = first `node` on PATH
+    [[ -x $p/node ]] || continue
+    [[ $p == $NVM_DIR/versions/node/*/bin ]] && d=(${p%/bin})
+    break
+  done
+  if (( ! $#d )); then                                         # 2. resolve `default`
+    for i in {1..10}; do [[ -r $NVM_DIR/alias/$v ]] || break; v=$(<$NVM_DIR/alias/$v); done
+    v=${v#v}
+    case $v in
+      node|stable) d=($NVM_DIR/versions/node/v*(N/n)) ;;       # newest installed
+      *) d=($NVM_DIR/versions/node/v$v(N/))                    # exact, e.g. 26.12.1
+         (( $#d )) || d=($NVM_DIR/versions/node/v$v.*(N/n)) ;; # partial, e.g. 26 -> newest v26.x
+    esac
+  fi
+  (( $#d )) && [[ -x $d[-1]/bin/node ]] || return 0            # unresolvable: no nvm node, same as nvm
+  path=(${path:#$NVM_DIR/versions/node/*})
+  export NVM_BIN=$d[-1]/bin NVM_INC=$d[-1]/include/node
+}
+if [[ -r $_brew/opt/nvm/nvm.sh ]]; then
+  _nvm_load() {
+    unfunction nvm _nvm_load _nvm_lazy_complete 2>/dev/null
+    source $_brew/opt/nvm/nvm.sh
+    autoload -Uz compinit   # makes nvm's completion script skip its own (slow) compinit
+    source $_brew/opt/nvm/etc/bash_completion.d/nvm
+  }
+  nvm() { _nvm_load && nvm "$@" }
+  _nvm_lazy_complete() { _nvm_load && _bash_complete -o default -F __nvm }
+fi
+
+# ─── python: lazy pyenv ─────────────────────────────────────────────────────
+# Shims on PATH make `python` and .python-version work immediately. The pyenv
+# shell function and pyenv-virtualenv's per-prompt hook load on first `pyenv …`.
+export PYENV_ROOT=$HOME/.pyenv
+if [[ -x $_brew/bin/pyenv ]]; then
+  pyenv() {
+    unfunction pyenv
+    eval "$(command pyenv init - zsh)"
+    eval "$(command pyenv virtualenv-init - zsh 2>/dev/null)"
+    pyenv "$@"
+  }
+fi
+
+# ─── PATH ───────────────────────────────────────────────────────────────────
+path=(
+  $HOME/.local/bin      # uv, bun, …
+  $PYENV_ROOT/shims
+  $NVM_BIN
+  $path                 # Homebrew + system (from ~/.zprofile)
+)
+
+# ─── shell options & history ────────────────────────────────────────────────
+HISTFILE=$HOME/.zsh_history
+HISTSIZE=50000
+SAVEHIST=10000
+setopt extended_history hist_expire_dups_first hist_ignore_dups hist_ignore_space hist_verify share_history
+setopt auto_cd auto_pushd pushd_ignore_dups pushd_minus
+setopt interactive_comments long_list_jobs multios prompt_subst
+setopt auto_menu complete_in_word always_to_end
+unsetopt menu_complete flow_control
+WORDCHARS=''
+
+# ─── completion ─────────────────────────────────────────────────────────────
+[[ -d $_brew/share/zsh/site-functions ]] && fpath=($_brew/share/zsh/site-functions $fpath)
+zmodload -i zsh/complist
+autoload -Uz compinit
+() {
+  setopt local_options extended_glob
+  local dump=$_zcache/zcompdump-$ZSH_VERSION
+  # Full scan + security audit at most every 20h; otherwise load the compiled cache.
+  if [[ -n $dump.zwc(#qN.mh-20) ]]; then
+    compinit -C -d $dump
+  else
+    compinit -i -d $dump && zcompile $dump
+  fi
+}
+autoload -Uz bashcompinit && bashcompinit
+
+zstyle ':completion:*:*:*:*:*' menu select
+zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}' 'r:|=*' 'l:|=* r:|=*'
+zstyle ':completion:*' special-dirs true
+zstyle ':completion:*' list-colors ''
+zstyle ':completion:*:*:kill:*:processes' list-colors '=(#b) #([0-9]#) ([0-9a-z-]#)*=01;34=0=01'
+zstyle ':completion:*:*:*:*:processes' command "ps -u $USERNAME -o pid,user,comm -w -w"
+zstyle ':completion:*:cd:*' tag-order local-directories directory-stack path-directories
+zstyle ':completion:*' use-cache yes
+zstyle ':completion:*' cache-path $_zcache
+zstyle ':completion:*:*:*:users' ignored-patterns \
+  adm amanda apache at avahi avahi-autoipd beaglidx bin cacti canna \
+  clamav daemon dbus distcache dnsmasq dovecot fax ftp games gdm \
+  gkrellmd gopher hacluster haldaemon halt hsqldb ident junkbust kdm \
+  ldap lp mail mailman mailnull man messagebus mldonkey mysql nagios \
+  named netdump news nfsnobody nobody nscd ntp nut nx obsrun openvpn \
+  operator pcap polkitd postfix postgres privoxy pulse pvm quagga radvd \
+  rpc rpcuser rpm rtkit scard shutdown squid sshd statd svn sync tftp \
+  usbmux uucp vcsa wwwrun xfs '_*'
+zstyle '*' single-ignored show
+
+(( $+functions[_nvm_lazy_complete] )) && compdef _nvm_lazy_complete nvm
+
+# ─── key bindings (emacs mode, oh-my-zsh equivalents) ───────────────────────
+bindkey -e
+autoload -Uz up-line-or-beginning-search down-line-or-beginning-search edit-command-line
+autoload -Uz bracketed-paste-magic url-quote-magic
+zle -N up-line-or-beginning-search
+zle -N down-line-or-beginning-search
+zle -N edit-command-line
+zle -N bracketed-paste bracketed-paste-magic
+zle -N self-insert url-quote-magic
+bindkey '^[[A' up-line-or-beginning-search;   bindkey '^[OA' up-line-or-beginning-search
+bindkey '^[[B' down-line-or-beginning-search; bindkey '^[OB' down-line-or-beginning-search
+bindkey '^[[H' beginning-of-line;             bindkey '^[OH' beginning-of-line
+bindkey '^[[F' end-of-line;                   bindkey '^[OF' end-of-line
+bindkey '^[[5~' up-line-or-history
+bindkey '^[[6~' down-line-or-history
+bindkey '^[[Z' reverse-menu-complete
+bindkey '^?' backward-delete-char
+bindkey '^[[3~' delete-char
+bindkey '^[[3;5~' kill-word
+bindkey '^[[1;5C' forward-word
+bindkey '^[[1;5D' backward-word
+bindkey '\ew' kill-region
+bindkey -s '\el' 'ls\n'
+bindkey '^r' history-incremental-search-backward   # overridden by fzf below
+bindkey ' ' magic-space
+bindkey '^X^E' edit-command-line
+bindkey '^[m' copy-prev-shell-word
+bindkey -M menuselect '^o' accept-and-infer-next-history
+
+# ─── prompt (robbyrussell look, one git call per prompt) ────────────────────
+_prompt_git_info() {
+  _git_info=
+  local line head oid dirty
+  local -a out
+  out=("${(@f)$(command git --no-optional-locks status --porcelain=v2 --branch --ignore-submodules=dirty 2>/dev/null)}")
+  [[ -n $out[1] ]] || return 0
+  for line in $out; do
+    case $line in
+      '# branch.oid '*)  oid=${line#'# branch.oid '} ;;
+      '# branch.head '*) head=${line#'# branch.head '} ;;
+      '#'*) ;;
+      *) dirty=1; break ;;
+    esac
+  done
+  [[ $head == '(detached)' ]] && head=${oid[1,7]}
+  _git_info="%B%F{blue}git:(%F{red}${head//\%/%%}%F{blue})"
+  [[ -n $dirty ]] && _git_info+=" %F{yellow}✗"
+  _git_info+="%f%b "
+}
+precmd_functions+=(_prompt_git_info)
+PROMPT='%B%(?.%F{green}.%F{red})➜ %f %F{cyan}%c%f%b ${_git_info}'
+
+# ─── fzf (key bindings + completion; `fzf --zsh` output cached + compiled) ──
+# Absolute path on purpose: touching $commands here would hash every PATH dir at startup.
+if [[ -x $_brew/bin/fzf ]]; then
+  _fzf_init=$_zcache/fzf-init.zsh
+  [[ -s $_fzf_init && $_fzf_init -nt $_brew/bin/fzf ]] || { $_brew/bin/fzf --zsh >| $_fzf_init && zcompile $_fzf_init }
+  source $_fzf_init
+fi
+
+export FZF_DEFAULT_OPTS="--style full --preview 'fzf-preview.sh {}' --bind 'focus:transform-header:file --brief {}'"
+
+# Preview file content using bat (https://github.com/sharkdp/bat)
+export FZF_CTRL_T_OPTS="
+  --walker-skip .git,node_modules,target
+  --preview 'bat -n --color=always {}'
+  --bind 'ctrl-/:change-preview-window(down|hidden|)'"
+
+# Print tree structure in the preview window
+export FZF_ALT_C_OPTS=" \
+  --walker-skip .git,node_modules,target \
+  --preview '([[ -f {} ]] && (bat --style=numbers --color=always {} || cat {})) || \
+             ([[ -d {} ]] && (tree -C {} | head -200)) || \
+             echo {} 2> /dev/null' \
+  --layout=reverse \
+  --height=80% \
+  --info=inline \
+  --walker-root=$HOME/Code"
+
+# ─── aliases ────────────────────────────────────────────────────────────────
+# oh-my-zsh carry-overs
+if [[ $OSTYPE == darwin* ]]; then alias ls='ls -G'; else alias ls='ls --color=auto'; fi
+alias diff='diff --color'
+alias grep='grep --color=auto --exclude-dir={.bzr,CVS,.git,.hg,.svn,.idea,.tox}'
+alias egrep='egrep --color=auto --exclude-dir={.bzr,CVS,.git,.hg,.svn,.idea,.tox}'
+alias fgrep='fgrep --color=auto --exclude-dir={.bzr,CVS,.git,.hg,.svn,.idea,.tox}'
+alias -g ...='../..' ....='../../..' .....='../../../..' ......='../../../../..'
+alias -- -='cd -'
+alias 1='cd -1' 2='cd -2' 3='cd -3' 4='cd -4' 5='cd -5' 6='cd -6' 7='cd -7' 8='cd -8' 9='cd -9'
+alias md='mkdir -p' rd=rmdir _='sudo '
+alias l='ls -lah' la='ls -lAh' ll='ls -lh' lsa='ls -lah'
+alias history='fc -l 1'
+d() { if [[ -n $1 ]]; then dirs "$@"; else dirs -v | head -n 10; fi }
+compdef _dirs d
+
+# mine
+alias lsla="ls -la"
+alias gs="git status"
+alias gl='git log --pretty=format:"%C(yellow)%h%Creset - %Cgreen%an%Creset %s %Cblue(%cr)%Creset"'
+alias vff="vim \$(fzf)"
+
+# ─── functions ──────────────────────────────────────────────────────────────
+function gitclean(){
+  if [ -z "$1" ]; then
+    echo "Usage: gitclean <branch-name>"
+    return 1
+  fi
+
+  git checkout main &&
+  git pull origin main &&
+  git branch -d "$1" &&
+  git fetch -p origin
+}
+
+# Auto-attach to tmux 'main' session if not already inside tmux
+if [ -z "$TMUX" ] && [[ $- == *i* ]] && [[ -x $_brew/bin/tmux || -x /usr/bin/tmux ]]; then
+  tmux new-session -A -s main
+fi
